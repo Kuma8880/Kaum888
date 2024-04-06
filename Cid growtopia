@@ -1,0 +1,195 @@
+function file_exists(name)local f=io.open(name,"r")return f~=nil and io.close(f)end if not file_exists("dkjson.lua")then local requestInfo={url="https://raw.githubusercontent.com/LuaDist/dkjson/master/dkjson.lua"}local response=httpReq(requestInfo)if response.success then filewrite=io.open("dkjson.lua","w")filewrite:write(response.body)filewrite:close()else log("Request Failed. Error Message:",response.failInfo)return end end
+
+local json = require("dkjson")
+
+local API = {}
+local apiKey = " API KEY "
+
+function API:new(apikey)
+    local instance = {
+        apiKey = apikey
+    }
+    setmetatable(instance, self)
+    self.__index = self
+    return instance
+end
+
+function API:buyMail()
+    local postData = "apikey=" .. self.apiKey .. "&name=mail&quantity=1"
+    local requestInfo = {
+        url = "https://cid.surferwallet.net/publicApi/purchase",
+        method = POST,
+        postData = postData
+    }
+    local response = httpReq(requestInfo)
+    local jsonData = json.decode(response.body)
+    if jsonData.success then
+        return true, jsonData.accounts[1].mail, jsonData.accounts[1].password
+    else
+        log("Error: " .. jsonData.error)
+        return false, "", ""
+    end
+end
+
+function API:verifyOTP(mail, pass,proxy)
+    local postData = "apikey=" .. self.apiKey .. "&mail=" .. mail .. "&password=" .. pass .. "&proxy=" .. proxy
+    local requestInfo = {
+        url = "https://cid.surferwallet.net/publicApi/verifyOtp",
+        method = POST, 
+        postData = postData
+    }
+    local response = httpReq(requestInfo)
+    local jsonData = json.decode(response.body)
+    local taskID = jsonData.taskId
+    if jsonData.success then
+        while true do
+            local postData = "apikey=" .. self.apiKey .. "&taskId=" .. taskID
+            local requestInfo = {
+                url = "https://cid.surferwallet.net/publicApi/getTaskResult",
+                method = POST,
+                postData = postData
+            }
+            local response = httpReq(requestInfo)
+            local jsonData = json.decode(response.body)
+
+            if jsonData.solved then
+                return true
+            elseif not jsonData.success then
+                log("Error: " .. jsonData.message)
+                return false
+            end
+            sleep(2000)
+        end
+    else
+        log("Error: " .. jsonData.error)
+        return false
+    end
+end
+
+function API:buyCid()
+    local postData = "apikey=" .. self.apiKey .. "&name=cid&quantity=1"
+    local requestInfo = {
+        url = "https://cid.surferwallet.net/publicApi/purchase",
+        method = POST,
+        postData = postData
+    }
+    local response = httpReq(requestInfo)
+    local jsonData = json.decode(response.body)
+    if jsonData.success then
+        return true, jsonData.accounts[1].growid, jsonData.accounts[1].password
+    else
+        log("Error: " .. jsonData.error)
+        return false, "", ""
+    end
+end
+
+function generateUsername()
+    local charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+    local username = ""
+    local charsetLength = string.len(charset)
+    for i = 1, 10 do
+        local randomIndex = math.random(1, charsetLength)
+        username = username .. string.sub(charset, randomIndex, randomIndex)
+    end
+    return username
+end
+
+function generatePassword()
+    local length = math.random(8, 18)
+    local charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#!$^&*."
+    local hasLetter = false
+    local hasNumber = false
+    local hasSpecialChar = false
+    local result = {}
+    for i = 1, length do
+        local randomIndex = math.random(#charset)
+        local randomChar = charset:sub(randomIndex, randomIndex)
+        table.insert(result, randomChar)
+        if randomChar:match("[a-zA-Z]") then
+            hasLetter = true
+        elseif randomChar:match("[0-9]") then
+            hasNumber = true
+        else
+            hasSpecialChar = true
+        end
+    end
+    if not hasLetter or not hasNumber or not hasSpecialChar then
+        return generateRandomString()
+    end
+    return table.concat(result)
+end
+
+function appendAccount(accountData)
+    local accounts = {}
+    local file = io.open("accounts.json", "r")
+    if file then
+        local fileContents = file:read("*all")
+        accounts = json.decode(fileContents)
+        file:close()
+    end
+    table.insert(accounts, accountData)
+    file = io.open("accounts.json", "w")
+    file:write(json.encode(accounts, { indent = true }))
+    file:close()
+end
+
+
+local api = API:new(apiKey)
+
+function createAccount(proxy)
+    local status, mail, mail_password = api:buyMail()
+
+    local growid = generateUsername()
+    local password = generatePassword()
+
+    if status then
+        local timeout = 20 
+        local start_time = os.time()
+        local proxy_HostName, proxy_Port, proxy_Username, proxy_Password = proxy:match("([^:]+):([^:]+):([^:]+):([^:]+)")
+        local botID = addGuest("", { HostName = proxy_HostName .. ":" .. proxy_Port, Username = proxy_Username, Password = proxy_Password })
+        local bot = getBot(botID)
+        
+        bot:setBool("skipTutorial", false)
+        bot:setBool("autoReconnect", true)
+
+        while bot:getLocal().captchaStatus ~= "Successful" do
+            if os.time() - start_time >= timeout then
+                bot:remove()
+                return false
+            end
+            sleep(1500)
+        end
+
+        while true do
+
+            if bot:getLocal().guest and bot:inWorld() and bot:getEnetStatus() == Connected and bot:getBotStatus() == Success then
+                bot:sendPacket("action|growid",2)
+                sleep(2000)
+                bot:sendPacket("action|dialog_return\ndialog_name|growid_apply\nlogon|"..growid.."\npassword|"..password.."\npassword_verify|"..password.."\nemail|"..mail,2)
+                sleep(2000)
+                if not bot:getLocal().guest then
+                    bot:reConnect()
+                end
+            end
+            if bot:getBotStatus() == AAP then
+                local urlProxyFormat = proxy_Username..":"..proxy_Password.."@"..proxy_HostName .. ":" .. proxy_Port
+                if api:verifyOTP(mail,mail_password,urlProxyFormat) then
+                    appendAccount({
+                        growid=growid,
+                        password=password,
+                        email=mail,
+                        email_password=mail_password
+                    })
+                    log("Account successfuly Created")
+                    bot:remove()
+                    return true
+                end
+            end
+        end
+
+    end
+    bot:remove()
+    return false
+end
+
+createAccount("ip:port:username:password")
